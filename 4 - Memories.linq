@@ -1,17 +1,19 @@
 <Query Kind="Program">
-  <NuGetReference Version="1.0.0-beta.5" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
+  <NuGetReference Version="1.0.0-beta.14" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
+  <NuGetReference>Azure.Identity</NuGetReference>
   <Namespace>Azure</Namespace>
   <Namespace>Azure.AI.OpenAI</Namespace>
   <Namespace>Azure.Core</Namespace>
+  <Namespace>Azure.Identity</Namespace>
   <Namespace>Microsoft.Identity.Client</Namespace>
   <Namespace>Newtonsoft.Json</Namespace>
+  <Namespace>System.Threading.Tasks</Namespace>
 </Query>
 
 #region Helpers
 static OpenAIClient ai = new Azure.AI.OpenAI.OpenAIClient(
-	new Uri("https://cog-grfdemo-bot.openai.azure.com/"),
-	new AzureKeyCredential(Util.GetPassword("openai")));
-
+	new Uri(Util.GetPassword("cog-grfdemo-bot-uri")),
+	new AzureKeyCredential(Util.GetPassword("cog-grfdemo-bot")));
 
 static DumpContainer dc = new DumpContainer();
 public static int diagnosticsIndent = 0;
@@ -22,10 +24,10 @@ public static void WriteDiagnostic(string diagnostic)
 	dc.UpdateContent(diagnostics.ToString());
 }
 
-static IntentResponse GetIntent(string userInput)
+static IntentResponse GetIntent(ChatRequestMessage[] memory)
 {
 	var openAiOutput = CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 10, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 10, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. Work out the intent of the customer given their input.
 Choose from the following intents. Response with "Unknown" if you don't know.
@@ -37,29 +39,28 @@ New Accounts
 New Credit Cards
 Branch Information
 Unknown
-
-USER INPUT
-------
-{userInput}
-
-""");
+""",
+memory);
 
 	WriteDiagnostic($"Calling OpenAI to detect User Sentiment. Detected: {openAiOutput}");
 
 	return new IntentResponse(
-		userInput,
+		memory,
 		openAiOutput,
 		null);
 
 }
 
-public static string CallOpenAI(ChatCompletionsOptions options, string prompt)
+public static string CallOpenAI(ChatCompletionsOptions options, string systemPrompt, ChatRequestMessage[] memory)
 {
-	options.Messages.Add(new ChatMessage(
-		ChatRole.System,
-		prompt));
+	options.Messages.Add(new ChatRequestSystemMessage(systemPrompt));
+	
+	foreach (var mem in memory)	
+	{	
+		options.Messages.Add(mem);
+	}
 
-	return ai.GetChatCompletions("Gpt35Turbo0613", options).Value.Choices[0].Message.Content;
+	return ai.GetChatCompletions(options).Value.Choices[0].Message.Content;
 }
 
 
@@ -67,8 +68,8 @@ IntentResponse PromptUserForMoreInformation(IntentResponse response)
 {
 	WriteDiagnostic("Calling OpenAI to get next suggestion to ask user");
 
-	return new IntentResponse(response.userInput, response.intent, CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0 },
+	return new IntentResponse(response.memory, response.intent, CallOpenAI(
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller who only talks abount banking. You are trying to find the intent of the customer from the below list of intents.
 Ask the customer something to find their intent given the conversation so-far?
@@ -80,16 +81,12 @@ New Accounts
 New Credit Cards
 Branch Information
 Unknown
-
-USER INPUT
-------
-{response.userInput}
-
-"""));
+""",
+response.memory));
 
 }
 
-public record IntentResponse(string userInput, string intent, string suggestedResponse);
+public record IntentResponse(ChatRequestMessage[] memory, string intent, string suggestedResponse);
 
 static class PromptChainsEx
 {
@@ -127,11 +124,12 @@ static class PromptChainsEx
 void Main()
 {
 	dc.Dump();
-	
+
 	var memory = new SlidingWindowChatMemory();
-	memory.StoreMemory("User\n-----\nWhat do I want to do?\n");
-	memory.StoreMemory("Assistant\n-----\nCan you please provide more specific information about what you are looking to do.\n");
-	memory.StoreMemory("User\n-----\nWhere can I catch a fish\n");
+	memory.StoreMemory(new ChatRequestUserMessage("What do I want to do?"));
+	memory.StoreMemory(new ChatRequestAssistantMessage("Can you please provide more specific information about what you are looking to do?"));
+	memory.StoreMemory(new ChatRequestUserMessage("Where can I catch a fish?"));
+	//memory.StoreMemory(new ChatRequestUserMessage("What's my account balance?"));
 
 	GetIntent(memory.Retrieve())
 	.ThenIf(
@@ -143,16 +141,16 @@ void Main()
 
 class SlidingWindowChatMemory
 {
-	private IList<string> _memory = new List<string>();
-	public SlidingWindowChatMemory StoreMemory(string memory)
+	private IList<ChatRequestMessage> _memory = new List<ChatRequestMessage>();
+	public SlidingWindowChatMemory StoreMemory(ChatRequestMessage memory)
 	{
 		if (_memory.Count > 10) { _memory.RemoveAt(0); }
 		_memory.Add(memory);
 		return this;
 	}
 
-	public string Retrieve()
+	public ChatRequestMessage[] Retrieve()
 	{
-		return string.Join(Environment.NewLine, _memory);
+		return _memory.ToArray();
 	}
 }

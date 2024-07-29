@@ -1,21 +1,21 @@
 <Query Kind="Statements">
-  <NuGetReference Version="1.0.0-beta.6" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
-  <NuGetReference Prerelease="true">Azure.Search.Documents</NuGetReference>
+  <NuGetReference Version="1.0.0-beta.14" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
+  <NuGetReference Version="11.6.0-beta.3" Prerelease="true">Azure.Search.Documents</NuGetReference>
   <Namespace>Azure</Namespace>
   <Namespace>Azure.AI.OpenAI</Namespace>
   <Namespace>Azure.Core</Namespace>
+  <Namespace>Azure.Search.Documents</Namespace>
+  <Namespace>Azure.Search.Documents.Models</Namespace>
   <Namespace>Microsoft.Identity.Client</Namespace>
   <Namespace>Newtonsoft.Json</Namespace>
   <Namespace>Newtonsoft.Json.Schema</Namespace>
-  <Namespace>Azure.Search.Documents</Namespace>
-  <Namespace>Azure.Search.Documents.Models</Namespace>
 </Query>
 
 #region Search
 
 var ai = new Azure.AI.OpenAI.OpenAIClient(
-	new Uri("https://cog-grfdemo-bot.openai.azure.com/"),
-	new AzureKeyCredential(Util.GetPassword("openai")));
+	new Uri(Util.GetPassword("cog-grfdemo-bot-uri")),
+	new AzureKeyCredential(Util.GetPassword("cog-grfdemo-bot")));
 
 #endregion
 
@@ -32,28 +32,35 @@ var ai = new Azure.AI.OpenAI.OpenAIClient(
 //There's a lot of interest around the best document cracking techniques... Speak to your friendly Data Scientist.
 
 //var input = "What are the opening hours of our stores on Monday?";
-//var input = "Qu'est ce les coloures dans une rainbow?";
 //var input = "What are the colours of the rainbow?";
-var input = "Tell me about Exposure to dust";
-var embeddings = ai.GetEmbeddings("Ada002Embedding", new EmbeddingsOptions(input)).Value.Data[0].Embedding;
+//var input = "Qu'est ce les coloures dans une rainbow?";
+var input = "What is an embedding?";
+var embeddings = ai.GetEmbeddings(new EmbeddingsOptions("Ada002Embedding", [input])).Value.Data[0].Embedding;
 
 //Perform the search to find documents 'closest' to the users input.
 SearchUsingAzureCognitiveSearch(
-	input, 
+	input,
 	embeddings)
 .Dump();
 
 
-SearchDocument SearchUsingAzureCognitiveSearch(string input, IReadOnlyList<float> embeddings)
+SearchDocument SearchUsingAzureCognitiveSearch(string input, ReadOnlyMemory<float> embeddings)
 {
 	var searchClient = new Azure.Search.Documents.SearchClient(new Uri("https://srch-grfdemo-bot.search.windows.net"), "info-idx", new AzureKeyCredential(Util.GetPassword("cogsearch")));
-	var vector = new SearchQueryVector { KNearestNeighborsCount = 3, Value = embeddings };
-	vector.Fields.Add("contentVector");
+
+	var vectorSearch = new VectorSearchOptions();
+	var vectorQuery = new VectorizedQuery(embeddings)
+	{
+		KNearestNeighborsCount = 3
+	};
+	vectorQuery.Fields.Add("contentVector");
+	vectorSearch.Queries.Add(vectorQuery);
+
 	var searchOptions = new SearchOptions
 	{
 		Size = 10,
 		Select = { "metadata_storage_name", "content" },
+		VectorSearch = vectorSearch,
 	};
-	searchOptions.Vectors.Add(vector);
-	return searchClient.Search<SearchDocument>(input, searchOptions).Value.GetResults().Dump().First().Document;
+	return searchClient.Search<SearchDocument>(input, searchOptions).Value.GetResults().First().Document;
 }

@@ -1,5 +1,5 @@
 <Query Kind="Program">
-  <NuGetReference Version="1.0.0-beta.5" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
+  <NuGetReference Version="1.0.0-beta.14" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
   <Namespace>Azure</Namespace>
   <Namespace>Azure.AI.OpenAI</Namespace>
   <Namespace>Azure.Core</Namespace>
@@ -9,8 +9,8 @@
 
 #region Helpers
 static OpenAIClient ai = new Azure.AI.OpenAI.OpenAIClient(
-	new Uri("https://cog-grfdemo-bot.openai.azure.com/"),
-	new AzureKeyCredential(Util.GetPassword("openai")));
+	new Uri(Util.GetPassword("cog-grfdemo-bot-uri")),
+	new AzureKeyCredential(Util.GetPassword("cog-grfdemo-bot")));
 
 
 static DumpContainer dc = new DumpContainer();
@@ -25,7 +25,7 @@ public static void WriteDiagnostic(string diagnostic)
 static IntentResponse GetIntent(string userInput)
 {
 	var openAiOutput = CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 10, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 10, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. Work out the intent of the customer given their input.
 Choose from the following intents. Use Unknown if you don't know.
@@ -37,12 +37,10 @@ New Accounts
 New Credit Cards
 Branch Information
 Unknown
+""",
 
-USER INPUT
-------
-{userInput}
-
-""");
+userInput
+);
 
 	WriteDiagnostic($"Calling OpenAI to detect User Sentiment. Detected: {openAiOutput}");
 
@@ -53,13 +51,11 @@ USER INPUT
 
 }
 
-public static string CallOpenAI(ChatCompletionsOptions options, string prompt)
+public static string CallOpenAI(ChatCompletionsOptions options, string systemPrompt, string userPrompt)
 {
-	options.Messages.Add(new ChatMessage(
-		ChatRole.System,
-		prompt));
-
-	return ai.GetChatCompletions("Gpt35Turbo0613", options).Value.Choices[0].Message.Content;
+	options.Messages.Add(new ChatRequestSystemMessage(systemPrompt));
+	options.Messages.Add(new ChatRequestUserMessage(userPrompt));
+	return ai.GetChatCompletions(options).Value.Choices[0].Message.Content;
 }
 
 public record IntentResponse(string userInput, string intent, string suggestedResponse);
@@ -111,10 +107,10 @@ IntentResponse PromptUserForMoreInformation(IntentResponse response)
 	WriteDiagnostic("Calling OpenAI to get next suggestion to ask user");
 
 	return new IntentResponse(response.userInput, response.intent, CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. You are trying to find the intent of the customer from the below list of intents.
-What would you ask the customer next to find their intent, given their current input?
+What would you ask the customer next to find their intent, given their current input? Respond with just the question.
 
 INTENTS
 -----
@@ -123,11 +119,8 @@ New Accounts
 New Credit Cards
 Branch Information
 Unknown
-
-USER INPUT
-------
-{response.userInput}
-
-"""));
+""",
+response.userInput
+));
 
 }

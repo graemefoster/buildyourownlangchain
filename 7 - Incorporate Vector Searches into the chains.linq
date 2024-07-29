@@ -1,21 +1,21 @@
 <Query Kind="Program">
-  <NuGetReference Version="1.0.0-beta.6" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
+  <NuGetReference Version="1.0.0-beta.14" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
   <NuGetReference Prerelease="true">Azure.Search.Documents</NuGetReference>
   <Namespace>Azure</Namespace>
   <Namespace>Azure.AI.OpenAI</Namespace>
   <Namespace>Azure.Core</Namespace>
+  <Namespace>Azure.Search.Documents</Namespace>
+  <Namespace>Azure.Search.Documents.Models</Namespace>
   <Namespace>Microsoft.Identity.Client</Namespace>
   <Namespace>Newtonsoft.Json</Namespace>
   <Namespace>Newtonsoft.Json.Schema</Namespace>
-  <Namespace>Azure.Search.Documents.Models</Namespace>
-  <Namespace>Azure.Search.Documents</Namespace>
 </Query>
 
 #region Helpers
 
 static OpenAIClient ai = new Azure.AI.OpenAI.OpenAIClient(
-	new Uri("https://cog-grfdemo-bot.openai.azure.com/"),
-	new AzureKeyCredential(Util.GetPassword("openai")));
+	new Uri(Util.GetPassword("cog-grfdemo-bot-uri")),
+	new AzureKeyCredential(Util.GetPassword("cog-grfdemo-bot")));
 
 static DumpContainer dc = new DumpContainer();
 public static int diagnosticsIndent = 0;
@@ -29,7 +29,7 @@ public static void WriteDiagnostic(string diagnostic)
 static IntentResponse GetIntent(string userInput)
 {
 	var openAiOutput = CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 10, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 10, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. Work out the intent of the customer given their input.
 Choose from the following intents. Use Unknown if you don't know.
@@ -42,29 +42,25 @@ New Accounts
 New Credit Cards
 Branch Information
 Unknown
-
-USER INPUT
-------
-{userInput}
-
-""");
+""",
+userInput);
 
 	WriteDiagnostic($"Calling OpenAI to detect User Sentiment. Detected: {openAiOutput}");
-	
+
 	return new IntentResponse(
 		userInput,
+		null,
 		openAiOutput,
 		null);
 
 }
 
-public static string CallOpenAI(ChatCompletionsOptions options, string prompt)
+public static string CallOpenAI(ChatCompletionsOptions options, string systemPrompt, string userPrompt)
 {
-	options.Messages.Add(new ChatMessage(
-		ChatRole.System,
-		prompt));
+	options.Messages.Add(new ChatRequestSystemMessage(systemPrompt));
+	options.Messages.Add(new ChatRequestUserMessage(userPrompt));
 
-	return ai.GetChatCompletions("Gpt35Turbo0613", options).Value.Choices[0].Message.Content;
+	return ai.GetChatCompletions(options).Value.Choices[0].Message.Content;
 }
 
 
@@ -72,8 +68,8 @@ IntentResponse PromptUserForMoreInformation(IntentResponse response)
 {
 	WriteDiagnostic("Calling OpenAI to get next suggestion to ask user");
 
-	return new IntentResponse(response.userInput, response.intent, CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0 },
+	return new IntentResponse(response.userInput, response.intent, null, CallOpenAI(
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. You are trying to find the intent of the customer from the below list of intents.
 What would you ask the customer next to find their intent, given their current input?
@@ -85,12 +81,8 @@ New Accounts
 New Credit Cards
 Branch Information
 Unknown
-
-USER INPUT
-------
-{response.userInput}
-
-""").Dump("Next Suggestion Response"));
+""",
+response.userInput).Dump("Next Suggestion Response"));
 
 }
 
@@ -112,7 +104,7 @@ static class PromptChainsEx
 			return falsePrompt(input);
 		}
 	}
-	
+
 	//Check the given predicate. If true, then run the next prompt. Else return the original result.
 	public static T2 Then<T1, T2>(this T1 input, Func<T1, T2> next)
 	{
@@ -120,33 +112,40 @@ static class PromptChainsEx
 	}
 }
 
-public record IntentResponse(string userInput, string intent, string suggestedResponse);
+public record IntentResponse(string userInput, string intent, string documentChunk, string suggestedResponse);
 
 //Steps in LangChain or Semantic Kernel can interact with other systems, or just execute language code.
 //This example uses a step which can call Cognitive Search.
 //We then use the LLM to extract the relevant information from the document chunk, and present the result back to the user.
 
-SearchDocument Search(string input, IReadOnlyList<float> embeddings)
+SearchDocument Search(string input, ReadOnlyMemory<float> embeddings)
 {
 	WriteDiagnostic("Executing search against Vector Index");
 
 	var searchClient = new Azure.Search.Documents.SearchClient(new Uri("https://srch-grfdemo-bot.search.windows.net"), "info-idx", new AzureKeyCredential(Util.GetPassword("cogsearch")));
-	var vector = new SearchQueryVector { KNearestNeighborsCount = 3, Value = embeddings };
-	vector.Fields.Add("contentVector");
+
+	var vectorSearch = new VectorSearchOptions();
+	var vectorQuery = new VectorizedQuery(embeddings)
+	{
+		KNearestNeighborsCount = 3
+	};
+	vectorQuery.Fields.Add("contentVector");
+	vectorSearch.Queries.Add(vectorQuery);
+
 	var searchOptions = new SearchOptions
 	{
-		Size = 1,
+		Size = 10,
 		Select = { "metadata_storage_name", "content" },
+		VectorSearch = vectorSearch,
 	};
-	searchOptions.Vectors.Add(vector);
 	return searchClient.Search<SearchDocument>(input, searchOptions).Value.GetResults().First().Document;
 }
 
 
-IReadOnlyList<float> GetTextEmbeddings(string userInput)
+ReadOnlyMemory<float> GetTextEmbeddings(string userInput)
 {
 	WriteDiagnostic("Fetching Text Embeddings for user input");
-	return ai.GetEmbeddings("Ada002Embedding", new EmbeddingsOptions(userInput)).Value.Data[0].Embedding;
+	return ai.GetEmbeddings(new EmbeddingsOptions("Ada002Embedding", [userInput])).Value.Data[0].Embedding;
 }
 
 #endregion
@@ -159,14 +158,17 @@ void Main()
 {
 	dc.Dump();
 
-	//GetIntent("What time does my branch open on Friday?")
-	//GetIntent("À quelle heure ouvert la succursale a vendredi?")
-	GetIntent("Cuéntame sobre Exposición al polvo?")
+	GetIntent("What time does my branch open on Friday?")
+	#region more prompts
+	//GetIntent("À quelle heure le magasin ouvre-t-il le vendredi?")
+	//GetIntent("月曜日の開店時間は何時ですか?")
+	//GetIntent("What is an embedding?")
+	#endregion
 	.ThenIf(
-		"Check for unknown intent", 
-		response => response.intent == "Unknown", 
+		"Check for unknown intent",
+		response => response.intent == "Unknown",
 		response => PromptUserForMoreInformation(response),
-		response => 
+		response =>
 			GetTextEmbeddings(response.userInput)
 			.Then(embeddings => Search(response.userInput, embeddings))
 			.Then(searchResults => PresentResults(response, searchResults)))
@@ -178,24 +180,22 @@ static IntentResponse PresentResults(IntentResponse intent, SearchDocument resul
 	WriteDiagnostic("Calling OpenAI to present search result");
 
 	var openAiOutput = CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 200, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 200, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
-You are a bank teller. Extract the relevant content from the excerpt below and summarise it.
+You are a summariser. Extract the relevant content from the excerpt below to answer the customer's question, and summarise it.
 Only use the content below. If you do not know the answer then explain why.
 You must respond in the user's input language.
 
 EXCERPT
 ------
 {result["content"]}
-
-USER INPUT
-------
-{intent.userInput}
-
-""");
+""",
+intent.userInput
+);
 
 	return intent with
 	{
+		documentChunk = (string)result["content"],
 		suggestedResponse = openAiOutput
 	};
 

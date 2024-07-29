@@ -29,21 +29,13 @@ var options = new ChatCompletionsOptions()
 options.Messages.Add(
 	new ChatRequestSystemMessage(
 	"""
-You are a bank teller. 
-Tell me what the customer is trying to do from the following options.
-
-INTENTS
------
-Account Information
-New Accounts
-New Credit Cards
-Branch Information
+You are an image analysis expert. What do you see?
 """));
 
 options.Messages.Add(
-	new ChatRequestUserMessage(
-	"What's the balance on my account?"
-));
+
+	new ChatRequestUserMessage([new ChatMessageImageContentItem(
+		BinaryData.FromStream(File.OpenRead(Path.Combine(Path.GetDirectoryName(Util.CurrentQueryPath), "Alice trapeze.jpg"))), "image/jpeg")]));
 
 //Send the call to OpenAI
 await ai.GetChatCompletionsAsync(options).Dump();

@@ -1,21 +1,20 @@
 <Query Kind="Program">
-  <NuGetReference Version="1.0.0-beta.6" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
+  <NuGetReference Version="1.0.0-beta.14" Prerelease="true">Azure.AI.OpenAI</NuGetReference>
   <NuGetReference Prerelease="true">Azure.Search.Documents</NuGetReference>
   <Namespace>Azure</Namespace>
   <Namespace>Azure.AI.OpenAI</Namespace>
   <Namespace>Azure.Core</Namespace>
+  <Namespace>Azure.Search.Documents</Namespace>
+  <Namespace>Azure.Search.Documents.Models</Namespace>
   <Namespace>Microsoft.Identity.Client</Namespace>
   <Namespace>Newtonsoft.Json</Namespace>
   <Namespace>Newtonsoft.Json.Schema</Namespace>
-  <Namespace>Azure.Search.Documents.Models</Namespace>
-  <Namespace>Azure.Search.Documents</Namespace>
 </Query>
 
 #region Helpers
 static OpenAIClient ai = new Azure.AI.OpenAI.OpenAIClient(
-	new Uri("https://cog-grfdemo-bot.openai.azure.com/"),
-	new AzureKeyCredential(Util.GetPassword("openai")));
-
+	new Uri(Util.GetPassword("cog-grfdemo-bot-uri")),
+	new AzureKeyCredential(Util.GetPassword("cog-grfdemo-bot")));
 
 static DumpContainer dc = new DumpContainer();
 public static DateTimeOffset start = DateTimeOffset.UtcNow;
@@ -30,7 +29,7 @@ public static void WriteDiagnostic(string diagnostic)
 static IntentResponse GetIntent(string userInput)
 {
 	var openAiOutput = CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 10, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 10, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. Work out the intent of the customer given their input.
 Choose from the following intents. Use Unknown if you don't know.
@@ -41,13 +40,9 @@ Account Information
 New Accounts
 New Credit Cards
 Branch Information
-Unknown
-
-USER INPUT
-------
-{userInput}
-
-""");
+OpenAI Queries
+""",
+userInput);
 
 	WriteDiagnostic($"Calling OpenAI to detect User Sentiment. Detected: {openAiOutput}");
 
@@ -59,13 +54,12 @@ USER INPUT
 
 }
 
-public static string CallOpenAI(ChatCompletionsOptions options, string prompt)
+public static string CallOpenAI(ChatCompletionsOptions options, string systemPrompt, string userPrompt  = null)
 {
-	options.Messages.Add(new ChatMessage(
-		ChatRole.System,
-		prompt));
+	options.Messages.Add(new ChatRequestSystemMessage(systemPrompt));
+	if (!string.IsNullOrWhiteSpace(userPrompt)) options.Messages.Add(new ChatRequestUserMessage(userPrompt));
 
-	return ai.GetChatCompletions("Gpt35Turbo0613", options).Value.Choices[0].Message.Content;
+	return ai.GetChatCompletions(options).Value.Choices[0].Message.Content;
 }
 
 
@@ -74,7 +68,7 @@ IntentResponse PromptUserForMoreIntentInformation(IntentResponse response)
 	WriteDiagnostic("Calling OpenAI to get next suggestion to ask user");
 
 	return new IntentResponse(response.userInput, response.intent, CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. You are trying to find the intent of the customer from the below list of intents.
 What would you ask the customer next to find their intent, given their current input?
@@ -87,12 +81,9 @@ New Accounts
 New Credit Cards
 Branch Information
 Unknown
-
-USER INPUT
-------
-{response.userInput}
-
-""").Dump("Next Suggestion Response"));
+""",
+response.userInput
+).Dump("Next Suggestion Response"));
 
 }
 
@@ -101,19 +92,16 @@ IntentResponse PromptUserForMoreInformation(IntentResponse initialResponse, ApiC
 	WriteDiagnostic("Calling OpenAI to get next suggestion to ask user");
 
 	var apiCallResponse = CallOpenAI(
-			new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0 },
+			new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. The user is trying to call the function "GetAccountInformation" but is missing some parameters.
 What would you ask them next to get the missing information? 
 
 Only ask them to provide information for parameters defined in the function. 
 You must respond in the user's language.
-
-USER INPUT
-------
-{initialResponse.userInput}
-
-""");
+""",
+initialResponse.userInput
+);
 
 	return initialResponse with
 	{
@@ -213,38 +201,45 @@ static dynamic functionParameters = new
 	}
 };
 
-IReadOnlyList<float> GetTextEmbeddings(string userInput)
+ReadOnlyMemory<float> GetTextEmbeddings(string userInput)
 {
 	WriteDiagnostic("Fetching Text Embeddings for user input");
-	return ai.GetEmbeddings("Ada002Embedding", new EmbeddingsOptions(userInput)).Value.Data[0].Embedding;
+	return ai.GetEmbeddings(new EmbeddingsOptions("Ada002Embedding", [userInput])).Value.Data[0].Embedding;
 }
 
-SearchDocument Search(string input, IReadOnlyList<float> embeddings)
+SearchDocument Search(string input, ReadOnlyMemory<float> embeddings)
 {
 	WriteDiagnostic("Executing search against Vector Index");
 
 	var searchClient = new Azure.Search.Documents.SearchClient(new Uri("https://srch-grfdemo-bot.search.windows.net"), "info-idx", new AzureKeyCredential(Util.GetPassword("cogsearch")));
-	var vector = new SearchQueryVector { KNearestNeighborsCount = 3, Value = embeddings };
-	vector.Fields.Add("contentVector");
+
+	var vectorSearch = new VectorSearchOptions();
+	var vectorQuery = new VectorizedQuery(embeddings)
+	{
+		KNearestNeighborsCount = 3
+	};
+	vectorQuery.Fields.Add("contentVector");
+	vectorSearch.Queries.Add(vectorQuery);
+
 	var searchOptions = new SearchOptions
 	{
-		Size = 1,
+		Size = 10,
 		Select = { "metadata_storage_name", "content" },
+		VectorSearch = vectorSearch,
 	};
-	searchOptions.Vectors.Add(vector);
 	return searchClient.Search<SearchDocument>(input, searchOptions).Value.GetResults().First().Document;
 }
 
 ApiCallResponse GetFunctionCallParameters(string userInput)
 {
 	WriteDiagnostic("Calling OpenAI to get function parameters");
-	var completions = new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0 };
+	var completions = new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" };
 	completions.Functions.Add(function);
-	completions.Messages.Add(new ChatMessage(ChatRole.User, userInput));
+	completions.Messages.Add(new ChatRequestUserMessage(userInput));
 
 	var response = CallOpenAI(completions, userInput);
 
-	var result = ai.GetChatCompletions("Gpt35Turbo0613", completions).Value.Choices[0].Message;
+	var result = ai.GetChatCompletions(completions).Value.Choices[0].Message;
 	var arguments = JsonConvert.DeserializeObject<Dictionary<string, string>>(result.FunctionCall.Arguments);
 	return new ApiCallResponse(userInput, arguments, null, null);
 
@@ -255,9 +250,9 @@ static IntentResponse PresentResults(IntentResponse intent, SearchDocument resul
 	WriteDiagnostic("Calling OpenAI to present search result");
 
 	var openAiOutput = CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
-You are a bank teller. Extract the relevant content from the excerpt below and summarise it.
+You are an expert summariser. Extract the relevant content to answer the customer's question from the excerpt below, and summarise it.
 Only use the content below. If you do not know the answer then explain why.
 You must respond in the user's input language.
 
@@ -294,7 +289,7 @@ static IntentResponse PresentApiResults(IntentResponse intent, ApiCallResponse r
 	WriteDiagnostic("Presenting API call result");
 
 	var openAiOutput = CallOpenAI(
-		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0 },
+		new ChatCompletionsOptions() { Temperature = 0f, NucleusSamplingFactor = 0f, MaxTokens = 100, FrequencyPenalty = 0, PresencePenalty = 0, DeploymentName = "Gpt35Turbo0613" },
 		$"""
 You are a bank teller. You received the following data in response to a user's ask.
 Format the data in a concise way to answers the user's query. Respond in the user's language.
@@ -321,6 +316,7 @@ void Main()
 	dc.Dump();
 
 	GetIntent("What time does my branch open on Friday?")
+	//GetIntent("What is an embedding?")
 	//GetIntent("What is the balance on my account?")
 	//GetIntent("What are the last few payments on my account 123456789?")
 #region More Interesting prompts
@@ -334,8 +330,8 @@ void Main()
 		response => response.intent == "Unknown",
 		response => PromptUserForMoreIntentInformation(response))
 		
-	.ElseIf("Branch Information intent detected",
-		response => response.intent == "Branch Information",
+	.ElseIf("RAG intent detected",
+		response => response.intent == "Branch Information" || response.intent == "OpenAI Queries",
 		response =>
 			GetTextEmbeddings(response.userInput)
 			.Then(embeddings => Search(response.userInput, embeddings))
